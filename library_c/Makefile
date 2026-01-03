@@ -1,5 +1,5 @@
 all:
-	gcc -Wall -DTEST lib/blinkt.c -l bcm2835 -o blinkt
+	gcc -Wall -DTEST lib/blinkt.c -l gpiod -o blinkt
 
 devel:
 	-rm -r build

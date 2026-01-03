@@ -39,7 +39,7 @@ classifiers = ['Development Status :: 5 - Production/Stable',
 
 setup(
     name='blinkt',
-    version='0.1.2',
+    version='0.2.0',
     author='Philip Howard',
     author_email='phil@pimoroni.com',
     description="""Python library for driving Pimoroni Blinkt!""",
@@ -49,5 +49,5 @@ setup(
     url='http://www.pimoroni.com',
     classifiers=classifiers,
     py_modules=['blinkt'],
-    install_requires=['RPi.GPIO']
+    install_requires=['gpiod']
 )

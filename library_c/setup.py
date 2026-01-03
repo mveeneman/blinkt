@@ -5,7 +5,7 @@ from setuptools import setup, find_packages, Extension
 _blinkt = Extension(
 	'_blinkt',
 	include_dirs=['lib'],
-	libraries=['bcm2835'],
+	libraries=['gpiod'],
 	sources=['lib/blinkt.c','blinkt_wrap.c']
 )
 

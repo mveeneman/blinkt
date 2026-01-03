@@ -1,11 +1,10 @@
 """Library for the Pimoroni Blinkt! - 8-pixel APA102 LED display."""
 import atexit
 import time
+import gpiod
 
-import RPi.GPIO as GPIO
 
-
-__version__ = '0.1.2'
+__version__ = '0.2.0'
 
 DAT = 23
 CLK = 24
@@ -18,13 +17,21 @@ sleep_time = 0
 
 _gpio_setup = False
 _clear_on_exit = True
+_chip = None
+_request = None
 
 
 def _exit():
+    global _request, _chip
     if _clear_on_exit:
         clear()
         show()
-    GPIO.cleanup()
+    if _request:
+        _request.release()
+        _request = None
+    if _chip:
+        _chip.close()
+        _chip = None
 
 
 def set_brightness(brightness):
@@ -48,43 +55,53 @@ def clear():
 
 def _write_byte(byte):
     for x in range(8):
-        GPIO.output(DAT, byte & 0b10000000)
-        GPIO.output(CLK, 1)
+        _request.set_value(DAT, gpiod.line.Value.ACTIVE if (byte & 0b10000000) else gpiod.line.Value.INACTIVE)
+        _request.set_value(CLK, gpiod.line.Value.ACTIVE)
         time.sleep(sleep_time)
         byte <<= 1
-        GPIO.output(CLK, 0)
+        _request.set_value(CLK, gpiod.line.Value.INACTIVE)
         time.sleep(sleep_time)
 
 
 # Emit exactly enough clock pulses to latch the small dark die APA102s which are weird
 # for some reason it takes 36 clocks, the other IC takes just 4 (number of pixels/2)
 def _eof():
-    GPIO.output(DAT, 0)
+    _request.set_value(DAT, gpiod.line.Value.INACTIVE)
     for x in range(36):
-        GPIO.output(CLK, 1)
+        _request.set_value(CLK, gpiod.line.Value.ACTIVE)
         time.sleep(sleep_time)
-        GPIO.output(CLK, 0)
+        _request.set_value(CLK, gpiod.line.Value.INACTIVE)
         time.sleep(sleep_time)
 
 
 def _sof():
-    GPIO.output(DAT, 0)
+    _request.set_value(DAT, gpiod.line.Value.INACTIVE)
     for x in range(32):
-        GPIO.output(CLK, 1)
+        _request.set_value(CLK, gpiod.line.Value.ACTIVE)
         time.sleep(sleep_time)
-        GPIO.output(CLK, 0)
+        _request.set_value(CLK, gpiod.line.Value.INACTIVE)
         time.sleep(sleep_time)
 
 
 def show():
     """Output the buffer to Blinkt!."""
-    global _gpio_setup
+    global _gpio_setup, _chip, _request
 
     if not _gpio_setup:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        GPIO.setup(DAT, GPIO.OUT)
-        GPIO.setup(CLK, GPIO.OUT)
+        # Try gpiochip4 for Raspberry Pi 5, fallback to gpiochip0 for older models
+        try:
+            _chip = gpiod.Chip('/dev/gpiochip4')
+        except FileNotFoundError:
+            _chip = gpiod.Chip('/dev/gpiochip0')
+        
+        # Request GPIO lines for output
+        _request = _chip.request_lines(
+            consumer="blinkt",
+            config={
+                DAT: gpiod.LineSettings(direction=gpiod.line.Direction.OUTPUT, output_value=gpiod.line.Value.INACTIVE),
+                CLK: gpiod.LineSettings(direction=gpiod.line.Direction.OUTPUT, output_value=gpiod.line.Value.INACTIVE)
+            }
+        )
         atexit.register(_exit)
         _gpio_setup = True
 

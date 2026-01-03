@@ -1,4 +1,4 @@
-#include <bcm2835.h>
+#include <gpiod.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +14,10 @@
 
 #define MOSI 23
 #define SCLK 24
+
+// GPIO chip and line request for libgpiod v2
+static struct gpiod_chip *chip = NULL;
+static struct gpiod_line_request *request = NULL;
 
 #ifdef TEST
 volatile int running = 0;
@@ -70,9 +74,9 @@ uint32_t rgb(uint8_t r, uint8_t g, uint8_t b){
 inline static void write_byte(uint8_t byte){
 	int n;
 	for(n = 0; n < 8; n++){
-		bcm2835_gpio_write(MOSI, (byte & (1 << (7-n))) > 0);
-		bcm2835_gpio_write(SCLK, HIGH);
-		bcm2835_gpio_write(SCLK, LOW);
+		gpiod_line_request_set_value(request, MOSI, (byte & (1 << (7-n))) > 0);
+		gpiod_line_request_set_value(request, SCLK, 1);
+		gpiod_line_request_set_value(request, SCLK, 0);
 	}
 
 }
@@ -95,24 +99,98 @@ void show(void){
 }
 
 void stop(void){
-	bcm2835_spi_end();
-
-	bcm2835_close();
+	if (request) {
+		gpiod_line_request_release(request);
+		request = NULL;
+	}
+	if (chip) {
+		gpiod_chip_close(chip);
+		chip = NULL;
+	}
 }
 
 
 int start(void){
-
-	if(!bcm2835_init()) return 1;
+	// Open GPIO chip (gpiochip4 on Raspberry Pi 5, gpiochip0 on older models)
+	chip = gpiod_chip_open("/dev/gpiochip4");
+	if (!chip) {
+		// Fallback to gpiochip0 for older Raspberry Pi models
+		chip = gpiod_chip_open("/dev/gpiochip0");
+		if (!chip) {
+			fprintf(stderr, "Failed to open GPIO chip\n");
+			return 1;
+		}
+	}
 
 #ifdef TEST
 	printf("GPIO Initialized\n");
 #endif
 
-	bcm2835_gpio_fsel(MOSI, BCM2835_GPIO_FSEL_OUTP);
-	bcm2835_gpio_write(MOSI, LOW);
-	bcm2835_gpio_fsel(SCLK, BCM2835_GPIO_FSEL_OUTP);
-	bcm2835_gpio_write(SCLK, LOW);
+	// Configure line settings for output
+	struct gpiod_line_settings *settings = gpiod_line_settings_new();
+	if (!settings) {
+		fprintf(stderr, "Failed to create line settings\n");
+		gpiod_chip_close(chip);
+		chip = NULL;
+		return 1;
+	}
+
+	if (gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_OUTPUT) < 0) {
+		fprintf(stderr, "Failed to set line direction\n");
+		gpiod_line_settings_free(settings);
+		gpiod_chip_close(chip);
+		chip = NULL;
+		return 1;
+	}
+
+	gpiod_line_settings_set_output_value(settings, GPIOD_LINE_VALUE_INACTIVE);
+
+	// Configure line request
+	struct gpiod_line_config *line_cfg = gpiod_line_config_new();
+	if (!line_cfg) {
+		fprintf(stderr, "Failed to create line config\n");
+		gpiod_line_settings_free(settings);
+		gpiod_chip_close(chip);
+		chip = NULL;
+		return 1;
+	}
+
+	unsigned int offsets[2] = {MOSI, SCLK};
+	if (gpiod_line_config_add_line_settings(line_cfg, offsets, 2, settings) < 0) {
+		fprintf(stderr, "Failed to add line settings\n");
+		gpiod_line_config_free(line_cfg);
+		gpiod_line_settings_free(settings);
+		gpiod_chip_close(chip);
+		chip = NULL;
+		return 1;
+	}
+
+	// Request lines
+	struct gpiod_request_config *req_cfg = gpiod_request_config_new();
+	if (!req_cfg) {
+		fprintf(stderr, "Failed to create request config\n");
+		gpiod_line_config_free(line_cfg);
+		gpiod_line_settings_free(settings);
+		gpiod_chip_close(chip);
+		chip = NULL;
+		return 1;
+	}
+
+	gpiod_request_config_set_consumer(req_cfg, "blinkt");
+
+	request = gpiod_chip_request_lines(chip, req_cfg, line_cfg);
+
+	// Clean up config objects
+	gpiod_request_config_free(req_cfg);
+	gpiod_line_config_free(line_cfg);
+	gpiod_line_settings_free(settings);
+
+	if (!request) {
+		fprintf(stderr, "Failed to request GPIO lines\n");
+		gpiod_chip_close(chip);
+		chip = NULL;
+		return 1;
+	}
 
 	clear();
 
@@ -142,10 +220,11 @@ int main(){
 	while(running){
 
 		for(z = 0; z < NUM_LEDS; z++){		
-			switch(col){
+			switch((col+z) % 4){
 				case 0: set_pixel_uint32(z, rgb(y,0,0)); break;
 				case 1: set_pixel_uint32(z, rgb(0,y,0)); break;
 				case 2: set_pixel_uint32(z, rgb(0,0,y)); break;
+				case 3: set_pixel_uint32(z, rgb(y,y,y)); break;
 			}
 		}
 
@@ -155,7 +234,7 @@ int main(){
 
 		y+=1;
                 if(y>254) col++;
-                col%=3;
+                col%=4;
 		y%=255;
 
 	}
